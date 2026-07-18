@@ -1,0 +1,3 @@
+INIT_PROC proceso_hijo.txt 0
+SLEEP 2000
+EXIT

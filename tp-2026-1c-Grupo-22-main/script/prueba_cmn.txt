@@ -1,0 +1,3 @@
+INIT_PROC largo.txt 5
+INIT_PROC corto.txt 1
+EXIT

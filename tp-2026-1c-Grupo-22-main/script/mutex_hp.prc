@@ -1,0 +1,4 @@
+INIT_PROC P1.prc 3
+INIT_PROC P2.prc 1
+INIT_PROC P3.prc 2
+EXIT
