@@ -23,11 +23,37 @@ t_list *cola_exit; // Procesos que terminaron
 t_list *cola_block; // Procesos esperando IO
 t_list *lista_cpus; // CPUs conectadas
 
+// Colas de block por cada recurso
+
+t_list *cola_block_sleep;
+t_list *cola_block_stdin;
+t_list *cola_block_stdout;
+t_list *cola_block_memoria;
+t_list *cola_block_mutex;
+
+t_list *cola_susp_block_sleep;
+t_list *cola_susp_block_stdin;
+t_list *cola_susp_block_stdout;
+t_list *cola_susp_block_memoria;
+t_list *cola_susp_block_mutex;
+
 pthread_mutex_t mx_cola_ready; // Protege la lista para que no la toquen dos a la vez
 pthread_mutex_t mx_cola_new;   // El candado para la lista de procesos nuevos
 // Declara las var globales
 pthread_mutex_t mx_cola_block;
 pthread_mutex_t mx_lista_cpus;
+
+pthread_mutex_t mx_block_sleep;
+pthread_mutex_t mx_block_stdin;
+pthread_mutex_t mx_block_stdout;
+pthread_mutex_t mx_block_memoria;
+pthread_mutex_t mx_block_mutex;
+
+pthread_mutex_t mx_susp_block_sleep;
+pthread_mutex_t mx_susp_block_stdin;
+pthread_mutex_t mx_susp_block_stdout;
+pthread_mutex_t mx_susp_block_memoria;
+pthread_mutex_t mx_susp_block_mutex;
 
 sem_t sem_procesos_ready; // Avisa cuantos procesos hay listos para ejecutar
 sem_t sem_procesos_new;   // Este es el "timbre" de la cola NEW
@@ -56,11 +82,21 @@ t_list *cola_susp_block;
 pthread_mutex_t mx_cola_susp_block;
 int suspension_timeout_ms; // Aca cargamos el SUSPENSION_TIMEOUT del config
 
+typedef enum
+{
+    BLOQ_SLEEP,
+    BLOQ_STDIN,
+    BLOQ_STDOUT,
+    BLOQ_MEMORIA,
+    BLOQ_MUTEX
+} t_tipo_bloqueo;
+
 // Estructura para pasarle datos al hilo de la suspension
 typedef struct
 {
     uint32_t pid;
     int tiempo_bloqueado_ms;
+    t_tipo_bloqueo tipo;
 } t_suspension_args;
 
 // Esta estructura la usás para pasarle datos al hilo del quantum
@@ -158,6 +194,18 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&mx_cola_block, NULL);
     pthread_mutex_init(&mx_lista_cpus, NULL);
 
+    pthread_mutex_init(&mx_block_sleep, NULL);
+    pthread_mutex_init(&mx_block_stdin, NULL);
+    pthread_mutex_init(&mx_block_stdout, NULL);
+    pthread_mutex_init(&mx_block_memoria, NULL);
+    pthread_mutex_init(&mx_block_mutex, NULL);
+
+    pthread_mutex_init(&mx_susp_block_sleep, NULL);
+    pthread_mutex_init(&mx_susp_block_stdin, NULL);
+    pthread_mutex_init(&mx_susp_block_stdout, NULL);
+    pthread_mutex_init(&mx_susp_block_memoria, NULL);
+    pthread_mutex_init(&mx_susp_block_mutex, NULL);
+
     sem_init(&sem_cpus_libres, 0, 0);
 
     // Creamos las salas de espera
@@ -171,6 +219,18 @@ int main(int argc, char *argv[])
     // DOnde van los Mutex cuando se creen (SE puede ver como un cajon vacio)
     lista_mutex_globales = list_create();
     pthread_mutex_init(&mx_lista_mutex, NULL);
+
+    cola_block_sleep = list_create();
+    cola_block_stdin = list_create();
+    cola_block_stdout = list_create();
+    cola_block_memoria = list_create();
+    cola_block_mutex = list_create();
+
+    cola_susp_block_sleep = list_create();
+    cola_susp_block_stdin = list_create();
+    cola_susp_block_stdout = list_create();
+    cola_susp_block_memoria = list_create();
+    cola_susp_block_mutex = list_create();
 
     cola_block = list_create();
     cola_susp_block = list_create();
@@ -621,14 +681,17 @@ void *atender_cliente(void *arg)
                 log_info(logger, "## (%d) Pasa del estado %s al estado BLOCK [STDOUT]",
                          pcb->pid, estado_a_string(ant));
 
-                pthread_mutex_lock(&mx_cola_block);
-                list_add(cola_block, pcb);
-                pthread_mutex_unlock(&mx_cola_block);
+                // pthread_mutex_lock(&mx_cola_block);
+                pthread_mutex_lock(&mx_block_stdout);
+                list_add(cola_block_stdout, pcb);
+                pthread_mutex_unlock(&mx_block_stdout);
+                // pthread_mutex_unlock(&mx_cola_block);
 
                 // Temporizador de suspensión
                 t_suspension_args *args_stdout = malloc(sizeof(t_suspension_args));
                 args_stdout->pid = pcb->pid;
                 args_stdout->tiempo_bloqueado_ms = suspension_timeout_ms;
+                args_stdout->tipo = BLOQ_STDOUT;
                 pthread_t t_susp_stdout;
                 pthread_create(&t_susp_stdout, NULL, hilo_temporizador_suspension, args_stdout);
                 pthread_detach(t_susp_stdout);
@@ -705,14 +768,16 @@ void *atender_cliente(void *arg)
 
                 log_info(logger, "## (%d) Pasa del estado %s al estado BLOCK [STDIN]", pcb->pid, estado_a_string(ant));
 
-                pthread_mutex_lock(&mx_cola_block);
-                list_add(cola_block, pcb);
-                pthread_mutex_unlock(&mx_cola_block);
+                // pthread_mutex_lock(&mx_cola_block);
+                pthread_mutex_lock(&mx_block_stdin);
+                list_add(cola_block_stdin, pcb);
+                pthread_mutex_unlock(&mx_block_stdin);
+                // pthread_mutex_unlock(&mx_cola_block);
 
                 t_suspension_args *args_stdin = malloc(sizeof(t_suspension_args));
                 args_stdin->pid = pcb->pid;
                 args_stdin->tiempo_bloqueado_ms = suspension_timeout_ms;
-
+                args_stdin->tipo = BLOQ_STDIN;
                 pthread_t t_susp_stdin;
                 pthread_create(&t_susp_stdin, NULL, hilo_temporizador_suspension, args_stdin);
                 pthread_detach(t_susp_stdin);
@@ -750,14 +815,16 @@ void *atender_cliente(void *arg)
                 pcb->estado = BLOCK;
                 log_info(logger, "## (%d) Pasa del estado %s al estado BLOCK [SLEEP]", pid, estado_a_string(ant));
 
-                pthread_mutex_lock(&mx_cola_block);
-                list_add(cola_block, pcb);
-                pthread_mutex_unlock(&mx_cola_block);
+                // pthread_mutex_lock(&mx_cola_block);
+                pthread_mutex_lock(&mx_block_sleep);
+                list_add(cola_block_sleep, pcb);
+                pthread_mutex_unlock(&mx_block_sleep);
+                // pthread_mutex_unlock(&mx_cola_block);
 
                 t_suspension_args *args_sleep = malloc(sizeof(t_suspension_args));
                 args_sleep->pid = pcb->pid;
                 args_sleep->tiempo_bloqueado_ms = suspension_timeout_ms;
-
+                args_sleep->tipo = BLOQ_SLEEP;
                 pthread_t t_susp_sleep;
                 pthread_create(&t_susp_sleep, NULL, hilo_temporizador_suspension, args_sleep);
                 pthread_detach(t_susp_sleep);
@@ -797,9 +864,19 @@ void *atender_cliente(void *arg)
                 log_info(logger, "## (%d) Pasa del estado %s al estado BLOCK [MEM_ALLOC]",
                          pid, estado_a_string(ant));
 
-                pthread_mutex_lock(&mx_cola_block);
-                list_add(cola_block, pcb);
-                pthread_mutex_unlock(&mx_cola_block);
+                // pthread_mutex_lock(&mx_cola_block);
+                pthread_mutex_lock(&mx_block_memoria);
+                list_add(cola_block_memoria, pcb);
+                pthread_mutex_unlock(&mx_block_memoria);
+                // pthread_mutex_unlock(&mx_cola_block);
+                t_suspension_args *args_mem = malloc(sizeof(t_suspension_args));
+                args_mem->pid = pcb->pid;
+                args_mem->tiempo_bloqueado_ms = suspension_timeout_ms;
+                args_mem->tipo = BLOQ_MEMORIA;
+
+                pthread_t t_susp_mem;
+                pthread_create(&t_susp_mem, NULL, hilo_temporizador_suspension, args_mem);
+                pthread_detach(t_susp_mem);
 
                 pthread_mutex_lock(&mx_lista_cpus);
                 for (int i = 0; i < list_size(lista_cpus); i++)
@@ -820,7 +897,9 @@ void *atender_cliente(void *arg)
                 agregar_a_paquete(p, &pid, sizeof(int));
                 agregar_a_paquete(p, &id_seg, sizeof(int));
                 agregar_a_paquete(p, &tam, sizeof(int));
+                pthread_mutex_lock(&mx_comunicacion_memoria);
                 enviar_paquete(p, socket_memoria);
+                pthread_mutex_unlock(&mx_comunicacion_memoria);
                 eliminar_paquete(p);
                 break;
             }
@@ -833,7 +912,9 @@ void *atender_cliente(void *arg)
                 t_paquete *p = crear_paquete(ELIMINAR_SEGMENTO);
                 agregar_a_paquete(p, &pid, sizeof(int));
                 agregar_a_paquete(p, &id_seg, sizeof(int));
+                pthread_mutex_lock(&mx_comunicacion_memoria);
                 enviar_paquete(p, socket_memoria);
+                pthread_mutex_unlock(&mx_comunicacion_memoria);
                 eliminar_paquete(p);
 
                 pthread_mutex_lock(&mx_lista_cpus);
@@ -876,7 +957,7 @@ void *atender_cliente(void *arg)
 
                 // El hilo escuchar_kernel_memory va a recibir el OK/ERROR de KM,
                 // guardará el resultado en "ultima_respuesta_km" y destraba este semáforo
-                //sem_wait(&sem_respuesta_memoria); // volvi a descomentarlo para sincronizar los hilos
+                // sem_wait(&sem_respuesta_memoria); // volvi a descomentarlo para sincronizar los hilos
 
                 // --- EVALUAMOS LA RESPUESTA DE KERNEL MEMORY ---
                 if (ultima_respuesta_km != OK)
@@ -1116,32 +1197,32 @@ void *atender_cliente(void *arg)
             t_pcb *pcb_stdin = NULL;
             bool estaba_suspendido = false;
 
-            pthread_mutex_lock(&mx_cola_block);
-            for (int i = 0; i < list_size(cola_block); i++)
+            pthread_mutex_lock(&mx_block_stdin);
+            for (int i = 0; i < list_size(cola_block_stdin); i++)
             {
-                t_pcb *p = list_get(cola_block, i);
+                t_pcb *p = list_get(cola_block_stdin, i);
                 if (p->pid == pid_liberar)
                 {
-                    pcb_stdin = list_remove(cola_block, i);
+                    pcb_stdin = list_remove(cola_block_stdin, i);
                     break;
                 }
             }
-            pthread_mutex_unlock(&mx_cola_block);
+            pthread_mutex_unlock(&mx_block_stdin);
 
             if (pcb_stdin == NULL)
             {
-                pthread_mutex_lock(&mx_cola_susp_block);
-                for (int i = 0; i < list_size(cola_susp_block); i++)
+                pthread_mutex_lock(&mx_susp_block_stdin);
+                for (int i = 0; i < list_size(cola_susp_block_stdin); i++)
                 {
-                    t_pcb *p = list_get(cola_susp_block, i);
+                    t_pcb *p = list_get(cola_susp_block_stdin, i);
                     if (p->pid == pid_liberar)
                     {
-                        pcb_stdin = list_remove(cola_susp_block, i);
+                        pcb_stdin = list_remove(cola_susp_block_stdin, i);
                         estaba_suspendido = true;
                         break;
                     }
                 }
-                pthread_mutex_unlock(&mx_cola_susp_block);
+                pthread_mutex_unlock(&mx_susp_block_stdin);
             }
 
             if (pcb_stdin == NULL)
@@ -1160,11 +1241,13 @@ void *atender_cliente(void *arg)
             agregar_a_paquete(p_escritura, &pcb_stdin->tamanio_io, sizeof(uint32_t));
             agregar_a_paquete(p_escritura, &pcb_stdin->dir_logica_io, sizeof(uint32_t));
             agregar_a_paquete(p_escritura, contenido, pcb_stdin->tamanio_io);
+            pthread_mutex_lock(&mx_comunicacion_memoria);
             enviar_paquete(p_escritura, socket_memoria);
             eliminar_paquete(p_escritura);
 
             // Esperar confirmación de KM
             int cod_resp = recibir_operacion(socket_memoria);
+            pthread_mutex_unlock(&mx_comunicacion_memoria);
             if (cod_resp != RESPUESTA_ESCRITURA)
             {
                 log_error(logger, "KM no confirmó la escritura de STDIN para el PID %d", pcb_stdin->pid);
@@ -1188,6 +1271,67 @@ void *atender_cliente(void *arg)
             break;
         }
         case STDOUT_RESPUESTA:
+        {
+            t_list *datos_io = recibir_paquete(socket_cliente);
+            int pid_liberar = *(int *)list_get(datos_io, 0);
+            list_destroy_and_destroy_elements(datos_io, free);
+
+            t_pcb *pcb_despierto = NULL;
+            bool estaba_suspendido = false;
+
+            pthread_mutex_lock(&mx_block_stdout);
+
+            for (int i = 0; i < list_size(cola_block_stdout); i++)
+            {
+                t_pcb *p = list_get(cola_block_stdout, i);
+
+                if (p->pid == pid_liberar)
+                {
+                    pcb_despierto = list_remove(cola_block_stdout, i);
+                    break;
+                }
+            }
+
+            pthread_mutex_unlock(&mx_block_stdout);
+
+            if (pcb_despierto == NULL)
+            {
+                pthread_mutex_lock(&mx_susp_block_stdout);
+
+                for (int i = 0; i < list_size(cola_susp_block_stdout); i++)
+                {
+                    t_pcb *p = list_get(cola_susp_block_stdout, i);
+
+                    if (p->pid == pid_liberar)
+                    {
+                        pcb_despierto = list_remove(cola_susp_block_stdout, i);
+                        estaba_suspendido = true;
+                        break;
+                    }
+                }
+
+                pthread_mutex_unlock(&mx_susp_block_stdout);
+            }
+
+            if (pcb_despierto != NULL)
+            {
+                pcb_despierto->estado = READY;
+
+                if (estaba_suspendido)
+                    log_info(logger, "## (%d) finalizó IO y pasa a READY / SUSP. READY", pcb_despierto->pid);
+                else
+                    log_info(logger, "## (%d) finalizo IO y pasa a READY", pcb_despierto->pid);
+
+                pthread_mutex_lock(&mx_cola_ready);
+                list_add(colas_ready[pcb_despierto->prioridad], pcb_despierto);
+                pthread_mutex_unlock(&mx_cola_ready);
+
+                verificar_desalojo_por_prioridad(pcb_despierto);
+                sem_post(&sem_procesos_ready);
+            }
+
+            break;
+        }
         case SLEEP_RESPUESTA:
         {
             // Lo envia io sleep cuando finalizo el tiempo de espera
@@ -1199,33 +1343,33 @@ void *atender_cliente(void *arg)
             bool estaba_suspendido = false;
 
             // Intentamos buscarlo en la cola BLOCK normal
-            pthread_mutex_lock(&mx_cola_block);
-            for (int i = 0; i < list_size(cola_block); i++)
+            pthread_mutex_lock(&mx_block_sleep);
+            for (int i = 0; i < list_size(cola_block_sleep); i++)
             {
-                t_pcb *p = list_get(cola_block, i);
+                t_pcb *p = list_get(cola_block_sleep, i);
                 if (p->pid == pid_liberar)
                 {
-                    pcb_despierto = list_remove(cola_block, i);
+                    pcb_despierto = list_remove(cola_block_sleep, i);
                     break;
                 }
             }
-            pthread_mutex_unlock(&mx_cola_block);
+            pthread_mutex_unlock(&mx_block_sleep);
 
             // Si no estaba, significa que sufrio timeout y est en cola_susp_block
             if (pcb_despierto == NULL)
             {
-                pthread_mutex_lock(&mx_cola_susp_block);
-                for (int i = 0; i < list_size(cola_susp_block); i++)
+                pthread_mutex_lock(&mx_susp_block_sleep);
+                for (int i = 0; i < list_size(cola_susp_block_sleep); i++)
                 {
-                    t_pcb *p = list_get(cola_susp_block, i);
+                    t_pcb *p = list_get(cola_susp_block_sleep, i);
                     if (p->pid == pid_liberar)
                     {
-                        pcb_despierto = list_remove(cola_susp_block, i);
+                        pcb_despierto = list_remove(cola_susp_block_sleep, i);
                         estaba_suspendido = true;
                         break;
                     }
                 }
-                pthread_mutex_unlock(&mx_cola_susp_block);
+                pthread_mutex_unlock(&mx_susp_block_sleep);
             }
 
             if (pcb_despierto != NULL)
@@ -1728,11 +1872,10 @@ void verificar_desalojo_por_prioridad(t_pcb *proceso_entrante)
 
             cpu->quantum_vigente = 0;
 
-
             // MANDAMOS LA INTERRUPCION AL SOCKET ESPECIFICO DE ESTA CPU
             op_code tipo_int = FIN_QUANTUM;
             send(cpu->socket_interrupt, &tipo_int, sizeof(op_code), 0);
-            int pid = cpu->pcb_ejecutando->pid; //probamos esto para no mandar opcode, CPU espera pid
+            int pid = cpu->pcb_ejecutando->pid; // probamos esto para no mandar opcode, CPU espera pid
             send(cpu->socket_interrupt, &pid, sizeof(int), 0);
 
             break;
@@ -1748,39 +1891,83 @@ void *hilo_temporizador_suspension(void *arg)
     // Esperamos el tiempo configurado antes de suspender
     usleep(args->tiempo_bloqueado_ms * 1000);
 
-    pthread_mutex_lock(&mx_cola_block);
     t_pcb *pcb_a_suspender = NULL;
 
-    // Buscamos si el proceso todavia sigue bloqueado en la cola BLOCK normal
+    t_list *cola_block = NULL;
+    t_list *cola_susp = NULL;
+
+    pthread_mutex_t *mx_block = NULL;
+    pthread_mutex_t *mx_susp = NULL;
+
+    switch (args->tipo)
+    {
+    case BLOQ_SLEEP:
+        cola_block = cola_block_sleep;
+        cola_susp = cola_susp_block_sleep;
+        mx_block = &mx_block_sleep;
+        mx_susp = &mx_susp_block_sleep;
+        break;
+
+    case BLOQ_STDIN:
+        cola_block = cola_block_stdin;
+        cola_susp = cola_susp_block_stdin;
+        mx_block = &mx_block_stdin;
+        mx_susp = &mx_susp_block_stdin;
+        break;
+
+    case BLOQ_STDOUT:
+        cola_block = cola_block_stdout;
+        cola_susp = cola_susp_block_stdout;
+        mx_block = &mx_block_stdout;
+        mx_susp = &mx_susp_block_stdout;
+        break;
+
+    case BLOQ_MEMORIA:
+        cola_block = cola_block_memoria;
+        cola_susp = cola_susp_block_memoria;
+        mx_block = &mx_block_memoria;
+        mx_susp = &mx_susp_block_memoria;
+        break;
+
+    case BLOQ_MUTEX:
+        cola_block = cola_block_mutex;
+        cola_susp = cola_susp_block_mutex;
+        mx_block = &mx_block_mutex;
+        mx_susp = &mx_susp_block_mutex;
+        break;
+    }
+
+    pthread_mutex_lock(mx_block);
+
     for (int i = 0; i < list_size(cola_block); i++)
     {
         t_pcb *p = list_get(cola_block, i);
+
         if (p->pid == args->pid)
         {
             pcb_a_suspender = list_remove(cola_block, i);
             break;
         }
     }
-    pthread_mutex_unlock(&mx_cola_block);
 
-    // Si no es NULL, significa que la IO tardO¿ y corresponde suspenderlo
+    pthread_mutex_unlock(mx_block);
+
     if (pcb_a_suspender != NULL)
     {
         t_estado ant = pcb_a_suspender->estado;
-        pcb_a_suspender->estado = BLOCK; // Mantiene el estado interno como BLOCK según el modelo de 7 estados
+        pcb_a_suspender->estado = BLOCK;
 
-        log_info(logger, "## (%d) Pasa del estado %s al estado SUSP_BLOCK [TIMEOUT]",
-                 pcb_a_suspender->pid, estado_a_string(ant));
+        log_info(logger,
+                 "## (%d) Pasa del estado %s al estado SUSP_BLOCK [TIMEOUT]",
+                 pcb_a_suspender->pid,
+                 estado_a_string(ant));
 
-        pthread_mutex_lock(&mx_cola_susp_block);
-        list_add(cola_susp_block, pcb_a_suspender);
-        pthread_mutex_unlock(&mx_cola_susp_block);
+        pthread_mutex_lock(mx_susp);
+        list_add(cola_susp, pcb_a_suspender);
+        pthread_mutex_unlock(mx_susp);
 
-        // --- CORRECCION PROTOCOLO: Enviar orden de SUSPENDER a Kernel Memory ---
         t_paquete *paquete = crear_paquete(SUSPENDER_PROCESO);
         agregar_a_paquete(paquete, &(pcb_a_suspender->pid), sizeof(uint32_t));
-
-        // ENVIAMOS Y EN PROCESO LIBERAMOS LA MEMORIA DEL PAQUETE
         enviar_paquete(paquete, socket_memoria);
         eliminar_paquete(paquete);
     }
